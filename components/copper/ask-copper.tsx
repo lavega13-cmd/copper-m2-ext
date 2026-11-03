@@ -610,6 +610,12 @@ function sentRows(name: string, input: unknown): Row[] | string {
       ["Color", input.color ? String(input.color) : "Every color"],
     ];
   }
+  if (name === "compare_products") {
+    const products = Array.isArray(input.products) ? input.products : [];
+    return [
+      ["Products", products.map((p) => titleCase(String(p))).join(" vs ")],
+    ];
+  }
   return Object.entries(input).map(([label, value]) => [
     titleCase(label),
     String(value),
@@ -806,6 +812,63 @@ function CameBack({ name, output }: { name: string; output: unknown }) {
     if (output.status === "unavailable") {
       return <p className="text-xs">{String(output.message)}</p>;
     }
+  }
+
+  if (name === "compare_products" && Array.isArray(output.products)) {
+    const products = output.products.filter(isRecord);
+    return (
+      <div className="text-xs">
+        <div className="grid grid-cols-2 gap-3">
+          {products.map((product) => (
+            <div key={String(product.id)} className="min-w-0">
+              <div className="flex justify-between gap-2 font-semibold">
+                <span>{String(product.name)}</span>
+                <span className="tabular-nums">
+                  {formatUsd(Number(product.priceUsd))}
+                </span>
+              </div>
+              <p className="text-muted-foreground">{String(product.type)}</p>
+              <p className="text-muted-foreground mt-1">
+                {listOf(
+                  (Array.isArray(product.features) ? product.features : []).map(
+                    String,
+                  ),
+                )}
+              </p>
+              {Array.isArray(product.stock) && (
+                <div className="mt-1 space-y-0.5">
+                  {product.stock.filter(isRecord).map((row) => (
+                    <div
+                      key={String(row.color)}
+                      className="flex flex-wrap items-center justify-between gap-1"
+                    >
+                      <span>{String(row.color)}</span>
+                      <StockPill
+                        stock={String(row.stock)}
+                        restockDate={row.restockDate}
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+        {typeof output.stockMessage === "string" && (
+          <p className="mt-1">{output.stockMessage}</p>
+        )}
+        <div className="mt-2 flex items-baseline justify-between border-t pt-1">
+          <span className="font-semibold">
+            {typeof output.cheaper === "string"
+              ? `${output.cheaper} is cheaper by`
+              : "Same price"}
+          </span>
+          <span className="text-primary text-xl font-bold tabular-nums">
+            {formatUsd(Number(output.priceDifferenceUsd))}
+          </span>
+        </div>
+      </div>
+    );
   }
 
   return (
