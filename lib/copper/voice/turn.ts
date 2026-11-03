@@ -2,7 +2,13 @@
 // chat draws, so voice answers get the same tool cards as typed ones.
 import type { Progress, Step } from "@/lib/copper/assistant/progress";
 
-export type VoiceTurn = { id: number; question: string; progress: Progress };
+export type VoiceTurn = {
+  id: number;
+  question: string;
+  progress: Progress;
+  /** Dollar figures Copper said that no tool returned, set once the turn is done. */
+  ungrounded?: string[];
+};
 
 export type VoiceEvent =
   | { type: "heard"; text: string }
@@ -22,7 +28,8 @@ export function nextVoiceTurn(
 ): VoiceTurn | null {
   if (event.type === "done") {
     if (!turn || turn.progress.status !== "working") return turn;
-    return { ...turn, progress: { ...turn.progress, status: "done" } };
+    const progress: Progress = { ...turn.progress, status: "done" };
+    return { ...turn, progress, ungrounded: ungroundedFigures(progress) };
   }
 
   const current: VoiceTurn =
@@ -77,4 +84,36 @@ export function nextVoiceTurn(
         },
       };
   }
+}
+
+/** "$1,299.50" or "307 dollars" → 1299.5 / 307. */
+const MONEY =
+  /\$\s?(\d[\d,]*(?:\.\d+)?)|(\d[\d,]*(?:\.\d+)?)\s?(?:dollars|bucks)\b/gi;
+
+/** Every number anywhere inside a tool's output. */
+function numbersIn(value: unknown, into: Set<number>) {
+  if (typeof value === "number") into.add(Math.round(value * 100) / 100);
+  else if (Array.isArray(value)) value.forEach((v) => numbersIn(v, into));
+  else if (value && typeof value === "object")
+    Object.values(value).forEach((v) => numbersIn(v, into));
+}
+
+/**
+ * Dollar figures in Copper's reply that no finished tool call returned. Voice
+ * models are weaker at tools than chat models, so the panel flags these rather
+ * than trusting them. Catches figures written as digits, which is how the
+ * transcripts write money.
+ */
+export function ungroundedFigures(progress: Progress): string[] {
+  const known = new Set<number>();
+  for (const step of progress.steps)
+    if (step.type === "tool" && step.state === "done")
+      numbersIn(step.output, known);
+  const missing: string[] = [];
+  for (const match of progress.reply.matchAll(MONEY)) {
+    const value = Number((match[1] ?? match[2]).replace(/,/g, ""));
+    if (!known.has(Math.round(value * 100) / 100))
+      missing.push(match[0].trim());
+  }
+  return missing;
 }

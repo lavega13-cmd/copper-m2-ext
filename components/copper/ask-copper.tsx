@@ -46,7 +46,13 @@ export const STARTER_QUESTIONS = [
 ];
 
 /** A typed question, or a spoken one (voiceId set) from voice mode. */
-type Turn = { question: string; progress: Progress | null; voiceId?: number };
+type Turn = {
+  question: string;
+  progress: Progress | null;
+  voiceId?: number;
+  /** Dollar figures a spoken answer gave that no tool returned. */
+  ungrounded?: string[];
+};
 type ChatKey = "tools" | "noTools";
 
 const WORKING: Progress = { steps: [], reply: "", status: "working" };
@@ -109,11 +115,12 @@ export function AskCopper({ aiConfigured }: { aiConfigured: boolean }) {
   }, [turns]);
 
   // Spoken turns join the tools-on chat, updated in place as they stream in.
-  function onVoiceTurn({ id, question, progress }: VoiceTurn) {
+  function onVoiceTurn({ id, question, progress, ungrounded }: VoiceTurn) {
     const turn: Turn = {
       question: question.trim() || "(spoken question)",
       progress,
       voiceId: id,
+      ungrounded,
     };
     setChats((all) => {
       const at = all.tools.findIndex((t) => t.voiceId === id);
@@ -244,6 +251,17 @@ export function AskCopper({ aiConfigured }: { aiConfigured: boolean }) {
                       progress={turn.progress ?? WORKING}
                       useTools={useTools}
                     />
+                    {turn.ungrounded?.length ? (
+                      <p
+                        data-testid="ungrounded"
+                        role="alert"
+                        className="border-chart-3 bg-chart-3/15 flex items-start gap-2 rounded-lg border px-3 py-2 text-xs"
+                      >
+                        <TriangleAlertIcon className="mt-0.5 size-4 shrink-0" />
+                        Copper said {listOf(turn.ungrounded)}, which no tool
+                        returned. Trust the tool cards, not that figure.
+                      </p>
+                    ) : null}
                   </Fragment>
                 ))}
                 {!busy && (

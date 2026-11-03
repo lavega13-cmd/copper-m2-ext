@@ -1,32 +1,22 @@
 "use client";
 
-// Talk to Copper: speech in, speech out, through Gemini Live. The browser gets
-// a one-use token from startVoice() (the Google key never leaves the server),
-// streams the microphone up and plays Copper's voice back. When Copper needs a
-// fact it calls one of the same five tools as the chat, run on the server by
-// runVoiceTool(), and each call shows up as the usual tool card.
+// Talk to Copper: speech in, speech out. The browser gets a short-lived token
+// from startVoice() (the API key never leaves the server), opens the voice
+// provider the server picked (Gemini Live by default, Grok Voice with
+// VOICE_PROVIDER=xai), streams the microphone up and plays Copper's voice
+// back. When Copper needs a fact it calls one of the same five tools as the
+// chat, run on the server by runVoiceTool(), and each call shows as a tool card.
 import { MicIcon, SquareIcon } from "lucide-react";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import type { LiveServerMessage, Session } from "@google/genai";
 import { Button } from "@/components/ui/button";
 import { runVoiceTool, startVoice } from "@/lib/copper/voice/actions";
-import {
-  decodePcm16,
-  downsample,
-  encodePcm16,
-  INPUT_RATE,
-  OUTPUT_RATE,
-} from "@/lib/copper/voice/pcm";
-import {
-  nextVoiceTurn,
-  type VoiceEvent,
-  type VoiceTurn,
-} from "@/lib/copper/voice/turn";
+import { createConversation } from "@/lib/copper/voice/conversation";
+import { connectVoice, type VoiceLink } from "@/lib/copper/voice/link";
+import { decodePcm16, downsample, OUTPUT_RATE } from "@/lib/copper/voice/pcm";
+import type { VoiceTurn } from "@/lib/copper/voice/turn";
 
 type Phase = "idle" | "connecting" | "live";
 
-/** Sends about 100 ms of audio per message. */
-const CHUNK_SAMPLES = INPUT_RATE / 10;
 /** Voice stops on its own after 5 minutes, to keep the free tier free. */
 const MAX_SESSION_MS = 5 * 60_000;
 
@@ -64,27 +54,18 @@ export function VoiceChat({
     () => null,
   );
 
-  const session = useRef<Session | null>(null);
+  const link = useRef<VoiceLink | null>(null);
+  const finish = useRef<(() => void) | null>(null);
   const stream = useRef<MediaStream | null>(null);
   const micContext = useRef<AudioContext | null>(null);
   const playContext = useRef<AudioContext | null>(null);
   const playing = useRef(new Set<AudioBufferSourceNode>());
   const playAt = useRef(0);
-  const turn = useRef<VoiceTurn | null>(null);
-  const nextId = useRef(1);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onTurnRef = useRef(onTurn);
   useEffect(() => {
     onTurnRef.current = onTurn;
   }, [onTurn]);
-
-  function apply(event: VoiceEvent) {
-    const next = nextVoiceTurn(turn.current, event, nextId.current);
-    if (!next || next === turn.current) return;
-    if (next.id === nextId.current) nextId.current += 1;
-    turn.current = next;
-    onTurnRef.current(next);
-  }
 
   function stopPlayback() {
     playing.current.forEach((source) => {
@@ -116,58 +97,13 @@ export function VoiceChat({
     source.onended = () => playing.current.delete(source);
   }
 
-  async function runTools(message: LiveServerMessage) {
-    const calls = message.toolCall?.functionCalls ?? [];
-    const responses = await Promise.all(
-      calls.map(async (call) => {
-        const id = call.id ?? `${call.name}-${Date.now()}`;
-        const name = call.name ?? "";
-        apply({ type: "tool-call", id, name, input: call.args ?? {} });
-        const result = await runVoiceTool(name, call.args ?? {}).catch(() => ({
-          ok: false as const,
-          error: "The tool couldn't run just now.",
-        }));
-        apply({
-          type: "tool-result",
-          id,
-          ok: result.ok,
-          output: result.ok ? result.output : result.error,
-        });
-        return {
-          id: call.id,
-          name,
-          response: result.ok
-            ? { output: result.output }
-            : { error: result.error },
-        };
-      }),
-    );
-    if (responses.length)
-      session.current?.sendToolResponse({ functionResponses: responses });
-  }
-
-  function onMessage(message: LiveServerMessage) {
-    const content = message.serverContent;
-    if (content?.interrupted) stopPlayback();
-    if (content?.inputTranscription?.text)
-      apply({ type: "heard", text: content.inputTranscription.text });
-    for (const part of content?.modelTurn?.parts ?? []) {
-      const data = part.inlineData?.data;
-      if (data && part.inlineData?.mimeType?.startsWith("audio/")) play(data);
-    }
-    if (content?.outputTranscription?.text)
-      apply({ type: "said", text: content.outputTranscription.text });
-    if (message.toolCall) void runTools(message);
-    if (content?.turnComplete) apply({ type: "done" });
-  }
-
   function stop(message = "") {
     if (timer.current) clearTimeout(timer.current);
     timer.current = null;
-    const live = session.current;
-    session.current = null;
+    const open = link.current;
+    link.current = null;
     try {
-      live?.close();
+      open?.close();
     } catch {
       /* already closed */
     }
@@ -178,7 +114,8 @@ export function VoiceChat({
     void playContext.current?.close().catch(() => {});
     micContext.current = null;
     playContext.current = null;
-    apply({ type: "done" });
+    finish.current?.();
+    finish.current = null;
     setNote(message);
     setPhase("idle");
   }
@@ -199,31 +136,37 @@ export function VoiceChat({
       playContext.current = new AudioContext();
       micContext.current = new AudioContext();
 
-      const voice = await startVoice();
-      if (!voice) {
+      const session = await startVoice();
+      if (!session) {
         stop("Voice isn't available right now. Type your question instead.");
         return;
       }
-      const { GoogleGenAI, Modality } = await import("@google/genai");
-      const ai = new GoogleGenAI({
-        apiKey: voice.token,
-        httpOptions: { apiVersion: "v1alpha" },
+
+      const conversation = createConversation({
+        runTool: runVoiceTool,
+        reply: (replies) => link.current?.sendToolReplies(replies),
+        onTurn: (turn) => onTurnRef.current(turn),
       });
-      session.current = await ai.live.connect({
-        model: voice.model,
-        // The token locks the real settings on the server; this is only the shape.
-        config: { responseModalities: [Modality.AUDIO] },
-        callbacks: {
-          onmessage: onMessage,
-          onerror: () =>
-            stop("Voice dropped. Tap to talk again, or type below."),
-          onclose: () => {
-            if (session.current) stop("Voice ended. Tap to talk again.");
-          },
+      finish.current = conversation.finish;
+      link.current = await connectVoice(session, {
+        onAction: (action) => {
+          if (action.type === "audio") play(action.data);
+          else if (action.type === "interrupted") stopPlayback();
+          else void conversation.handle(action);
+        },
+        onClose: (reason) => {
+          if (!link.current) return;
+          stop(
+            reason === "error"
+              ? "Voice dropped. Tap to talk again, or type below."
+              : "Voice ended. Tap to talk again.",
+          );
         },
       });
 
       const mic = micContext.current;
+      const rate = link.current.inputRate;
+      const chunk = rate / 10; // about 100 ms per message
       const url = URL.createObjectURL(
         new Blob([MIC_WORKLET], { type: "application/javascript" }),
       );
@@ -232,17 +175,12 @@ export function VoiceChat({
       const node = new AudioWorkletNode(mic, "copper-mic");
       let pending: number[] = [];
       node.port.onmessage = (event: MessageEvent<Float32Array>) => {
-        const samples = downsample(event.data, mic.sampleRate);
-        for (const s of samples) pending.push(s);
-        if (pending.length < CHUNK_SAMPLES) return;
-        const chunk = Float32Array.from(pending);
+        for (const s of downsample(event.data, mic.sampleRate, rate))
+          pending.push(s);
+        if (pending.length < chunk) return;
+        const samples = Float32Array.from(pending);
         pending = [];
-        session.current?.sendRealtimeInput({
-          audio: {
-            data: encodePcm16(chunk),
-            mimeType: `audio/pcm;rate=${INPUT_RATE}`,
-          },
-        });
+        link.current?.sendAudio(samples);
       };
       // A silent output keeps the worklet running without echoing the mic.
       const mute = mic.createGain();
@@ -270,7 +208,7 @@ export function VoiceChat({
   // Hang up if the panel goes away mid-conversation.
   useEffect(
     () => () => {
-      if (session.current || stream.current) stop();
+      if (link.current || stream.current) stop();
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],

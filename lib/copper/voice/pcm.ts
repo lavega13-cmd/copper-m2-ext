@@ -1,16 +1,18 @@
-// Audio in the shape Gemini Live wants: 16 kHz, 16-bit mono PCM going up,
-// 24 kHz 16-bit PCM coming back, both base64 in JSON messages.
+// Audio in the shape the voice providers want: 16-bit mono PCM, base64 in
+// JSON messages. Gemini Live takes 16 kHz in and sends 24 kHz back; xAI uses
+// 24 kHz both ways.
 
 export const INPUT_RATE = 16_000;
 export const OUTPUT_RATE = 24_000;
 
-/** Averages a microphone buffer down to 16 kHz (browsers record at 44.1 or 48 kHz). */
+/** Averages a microphone buffer down to `toRate` (browsers record at 44.1 or 48 kHz). */
 export function downsample(
   samples: Float32Array,
   fromRate: number,
+  toRate = INPUT_RATE,
 ): Float32Array {
-  if (fromRate <= INPUT_RATE) return samples;
-  const ratio = fromRate / INPUT_RATE;
+  if (fromRate <= toRate) return samples;
+  const ratio = fromRate / toRate;
   const out = new Float32Array(Math.floor(samples.length / ratio));
   for (let i = 0; i < out.length; i++) {
     const start = Math.floor(i * ratio);
