@@ -1,7 +1,8 @@
-// Module 2: the four tools Ask Copper can use. Products and prices come from
+// Module 2: the tools Ask Copper can use. Products and prices come from
 // lib/copper/catalog.ts and stock from lib/copper/inventory.ts, so the
 // chatbot never has to make them up.
-// The contract for each tool is in specs/module-2/spec.md.
+// The contract for the first four is in specs/module-2/spec.md. The fifth,
+// compare_products, is this repo's extension (Module 2 deck, slide 16).
 import { tool, type ToolSet } from "ai";
 import { z } from "zod";
 import {
@@ -10,7 +11,7 @@ import {
   type Plan,
   type ProductId,
 } from "@/lib/copper/catalog";
-import { readInventory } from "@/lib/copper/inventory";
+import { readInventory, type InventoryRow } from "@/lib/copper/inventory";
 
 export type ProductList = {
   products: {
@@ -48,12 +49,14 @@ export type CheckAvailabilityInput = { product: ProductId; color?: string };
 
 export type Stock = "in_stock" | "low_stock" | "backordered";
 
+export type ColorStock = {
+  color: string;
+  stock: Stock;
+  restockDate: string | null;
+};
+
 export type Availability =
-  | {
-      status: "ok";
-      product: string;
-      colors: { color: string; stock: Stock; restockDate: string | null }[];
-    }
+  | { status: "ok"; product: string; colors: ColorStock[] }
   | { status: "not_a_color"; product: string; color: string; colors: string[] }
   | { status: "unavailable"; message: string };
 
@@ -177,10 +180,22 @@ export async function checkAvailability(
   // Read the stock list every time: stock changes, so never keep a copy.
   const rows = await readInventory();
   if (!rows) return { status: "unavailable", message: STOCK_DOWN };
+  return {
+    status: "ok",
+    product: product.name,
+    colors: stockFor(product.name, colors, rows),
+  };
+}
 
+/** Stock for some of a product's colors. A color with no stock row is left out. */
+function stockFor(
+  productName: string,
+  colors: string[],
+  rows: InventoryRow[],
+): ColorStock[] {
   // Stock rows hold the product's display name, not its id.
-  const mine = rows.filter((row) => row.product === product.name);
-  const found: Extract<Availability, { status: "ok" }>["colors"] = [];
+  const mine = rows.filter((row) => row.product === productName);
+  const found: ColorStock[] = [];
   for (const color of colors) {
     const row = mine.find((r) => r.color.toLowerCase() === color.toLowerCase());
     if (!row) continue;
@@ -191,7 +206,70 @@ export async function checkAvailability(
       restockDate: stock === "backordered" ? row.next_shipment : null,
     });
   }
-  return { status: "ok", product: product.name, colors: found };
+  return found;
+}
+
+export type CompareProductsInput = { products: ProductId[] };
+
+export type ProductComparison = {
+  products: {
+    id: ProductId;
+    name: string;
+    type: string;
+    priceUsd: number;
+    features: string[];
+    /** null when stock can't be read right now. */
+    stock: ColorStock[] | null;
+  }[];
+  /** The cheaper product's name, or null when they cost the same. */
+  cheaper: string | null;
+  priceDifferenceUsd: number;
+  /** Set when stock can't be read, so the reply says so instead of guessing. */
+  stockMessage: string | null;
+};
+
+export const compareProductsInput: z.ZodType<CompareProductsInput> = z.object({
+  products: z
+    .array(productId)
+    .length(2)
+    .refine(([a, b]) => a !== b, "Pick two different products"),
+});
+
+/** compare_products: two products side by side, with today's stock for each color. */
+export async function compareProducts(
+  input: CompareProductsInput,
+): Promise<ProductComparison> {
+  const catalog = getProducts();
+  const picked = input.products.map((id) => {
+    const product = catalog.find((p) => p.id === id);
+    if (!product) throw new Error(`Unknown product: ${id}`);
+    return product;
+  });
+
+  // One fresh read of the stock list covers both products.
+  const rows = await readInventory();
+  const products = picked.map((p) => ({
+    id: p.id,
+    name: p.name,
+    type: p.type,
+    priceUsd: p.priceUsd,
+    features: p.features.map((f) => f.name),
+    stock: rows ? stockFor(p.name, p.colors, rows) : null,
+  }));
+
+  // The model never does the arithmetic: the gap and the cheaper one come from here.
+  const [a, b] = products;
+  return {
+    products,
+    cheaper:
+      a.priceUsd === b.priceUsd
+        ? null
+        : a.priceUsd < b.priceUsd
+          ? a.name
+          : b.name,
+    priceDifferenceUsd: toCents(Math.abs(a.priceUsd - b.priceUsd)),
+    stockMessage: rows ? null : STOCK_DOWN,
+  };
 }
 
 export const copperTools = {
@@ -218,5 +296,11 @@ export const copperTools = {
       "Checks today's stock for a Copper product, for every color or just one, with restock dates for back-ordered colors.",
     inputSchema: checkAvailabilityInput,
     execute: async (input) => checkAvailability(input),
+  }),
+  compare_products: tool({
+    description:
+      "Compares two Copper products side by side: price, which is cheaper and by how much, type, features, and today's stock for every color.",
+    inputSchema: compareProductsInput,
+    execute: async (input) => compareProducts(input),
   }),
 } satisfies ToolSet;

@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { SetupRequired } from "@/components/setup-required";
+import { VoiceChat } from "@/components/copper/voice-chat";
 import { Button } from "@/components/ui/button";
 import {
   Sheet,
@@ -35,6 +36,7 @@ import {
   type ToolStep,
 } from "@/lib/copper/assistant/progress";
 import { formatUsd } from "@/lib/copper/catalog";
+import type { VoiceTurn } from "@/lib/copper/voice/turn";
 import { cn } from "@/lib/utils";
 
 export const STARTER_QUESTIONS = [
@@ -43,7 +45,14 @@ export const STARTER_QUESTIONS = [
   "Is Copper Plus cheaper monthly or yearly?",
 ];
 
-type Turn = { question: string; progress: Progress | null };
+/** A typed question, or a spoken one (voiceId set) from voice mode. */
+type Turn = {
+  question: string;
+  progress: Progress | null;
+  voiceId?: number;
+  /** Dollar figures a spoken answer gave that no tool returned. */
+  ungrounded?: string[];
+};
 type ChatKey = "tools" | "noTools";
 
 const WORKING: Progress = { steps: [], reply: "", status: "working" };
@@ -104,6 +113,26 @@ export function AskCopper({ aiConfigured }: { aiConfigured: boolean }) {
     const body = bodyRef.current;
     if (body) body.scrollTop = body.scrollHeight;
   }, [turns]);
+
+  // Spoken turns join the tools-on chat, updated in place as they stream in.
+  function onVoiceTurn({ id, question, progress, ungrounded }: VoiceTurn) {
+    const turn: Turn = {
+      question: question.trim() || "(spoken question)",
+      progress,
+      voiceId: id,
+      ungrounded,
+    };
+    setChats((all) => {
+      const at = all.tools.findIndex((t) => t.voiceId === id);
+      return {
+        ...all,
+        tools:
+          at === -1
+            ? [...all.tools, turn]
+            : all.tools.map((t, i) => (i === at ? turn : t)),
+      };
+    });
+  }
 
   async function send(question: string) {
     const text = question.trim();
@@ -222,6 +251,17 @@ export function AskCopper({ aiConfigured }: { aiConfigured: boolean }) {
                       progress={turn.progress ?? WORKING}
                       useTools={useTools}
                     />
+                    {turn.ungrounded?.length ? (
+                      <p
+                        data-testid="ungrounded"
+                        role="alert"
+                        className="border-chart-3 bg-chart-3/15 flex items-start gap-2 rounded-lg border px-3 py-2 text-xs"
+                      >
+                        <TriangleAlertIcon className="mt-0.5 size-4 shrink-0" />
+                        Copper said {listOf(turn.ungrounded)}, which no tool
+                        returned. Trust the tool cards, not that figure.
+                      </p>
+                    ) : null}
                   </Fragment>
                 ))}
                 {!busy && (
@@ -231,6 +271,7 @@ export function AskCopper({ aiConfigured }: { aiConfigured: boolean }) {
                   />
                 )}
               </div>
+              {useTools && <VoiceChat onTurn={onVoiceTurn} disabled={busy} />}
               <form
                 className="bg-background flex items-end gap-2 border-t p-3"
                 onSubmit={(event) => {
@@ -610,6 +651,12 @@ function sentRows(name: string, input: unknown): Row[] | string {
       ["Color", input.color ? String(input.color) : "Every color"],
     ];
   }
+  if (name === "compare_products") {
+    const products = Array.isArray(input.products) ? input.products : [];
+    return [
+      ["Products", products.map((p) => titleCase(String(p))).join(" vs ")],
+    ];
+  }
   return Object.entries(input).map(([label, value]) => [
     titleCase(label),
     String(value),
@@ -806,6 +853,63 @@ function CameBack({ name, output }: { name: string; output: unknown }) {
     if (output.status === "unavailable") {
       return <p className="text-xs">{String(output.message)}</p>;
     }
+  }
+
+  if (name === "compare_products" && Array.isArray(output.products)) {
+    const products = output.products.filter(isRecord);
+    return (
+      <div className="text-xs">
+        <div className="grid grid-cols-2 gap-3">
+          {products.map((product) => (
+            <div key={String(product.id)} className="min-w-0">
+              <div className="flex justify-between gap-2 font-semibold">
+                <span>{String(product.name)}</span>
+                <span className="tabular-nums">
+                  {formatUsd(Number(product.priceUsd))}
+                </span>
+              </div>
+              <p className="text-muted-foreground">{String(product.type)}</p>
+              <p className="text-muted-foreground mt-1">
+                {listOf(
+                  (Array.isArray(product.features) ? product.features : []).map(
+                    String,
+                  ),
+                )}
+              </p>
+              {Array.isArray(product.stock) && (
+                <div className="mt-1 space-y-0.5">
+                  {product.stock.filter(isRecord).map((row) => (
+                    <div
+                      key={String(row.color)}
+                      className="flex flex-wrap items-center justify-between gap-1"
+                    >
+                      <span>{String(row.color)}</span>
+                      <StockPill
+                        stock={String(row.stock)}
+                        restockDate={row.restockDate}
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+        {typeof output.stockMessage === "string" && (
+          <p className="mt-1">{output.stockMessage}</p>
+        )}
+        <div className="mt-2 flex items-baseline justify-between border-t pt-1">
+          <span className="font-semibold">
+            {typeof output.cheaper === "string"
+              ? `${output.cheaper} is cheaper by`
+              : "Same price"}
+          </span>
+          <span className="text-primary text-xl font-bold tabular-nums">
+            {formatUsd(Number(output.priceDifferenceUsd))}
+          </span>
+        </div>
+      </div>
+    );
   }
 
   return (
