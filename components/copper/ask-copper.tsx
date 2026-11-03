@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { SetupRequired } from "@/components/setup-required";
+import { VoiceChat } from "@/components/copper/voice-chat";
 import { Button } from "@/components/ui/button";
 import {
   Sheet,
@@ -35,6 +36,7 @@ import {
   type ToolStep,
 } from "@/lib/copper/assistant/progress";
 import { formatUsd } from "@/lib/copper/catalog";
+import type { VoiceTurn } from "@/lib/copper/voice/turn";
 import { cn } from "@/lib/utils";
 
 export const STARTER_QUESTIONS = [
@@ -43,7 +45,8 @@ export const STARTER_QUESTIONS = [
   "Is Copper Plus cheaper monthly or yearly?",
 ];
 
-type Turn = { question: string; progress: Progress | null };
+/** A typed question, or a spoken one (voiceId set) from voice mode. */
+type Turn = { question: string; progress: Progress | null; voiceId?: number };
 type ChatKey = "tools" | "noTools";
 
 const WORKING: Progress = { steps: [], reply: "", status: "working" };
@@ -104,6 +107,25 @@ export function AskCopper({ aiConfigured }: { aiConfigured: boolean }) {
     const body = bodyRef.current;
     if (body) body.scrollTop = body.scrollHeight;
   }, [turns]);
+
+  // Spoken turns join the tools-on chat, updated in place as they stream in.
+  function onVoiceTurn({ id, question, progress }: VoiceTurn) {
+    const turn: Turn = {
+      question: question.trim() || "(spoken question)",
+      progress,
+      voiceId: id,
+    };
+    setChats((all) => {
+      const at = all.tools.findIndex((t) => t.voiceId === id);
+      return {
+        ...all,
+        tools:
+          at === -1
+            ? [...all.tools, turn]
+            : all.tools.map((t, i) => (i === at ? turn : t)),
+      };
+    });
+  }
 
   async function send(question: string) {
     const text = question.trim();
@@ -231,6 +253,7 @@ export function AskCopper({ aiConfigured }: { aiConfigured: boolean }) {
                   />
                 )}
               </div>
+              {useTools && <VoiceChat onTurn={onVoiceTurn} disabled={busy} />}
               <form
                 className="bg-background flex items-end gap-2 border-t p-3"
                 onSubmit={(event) => {

@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "@ai-sdk/google": "4.0.93",
+    "@google/genai": "2.32.0",
     "@hookform/resolvers": "5.9.1",
     "@streamdown/cjk": "1.0.4",
     "@streamdown/code": "2.0.0",
