@@ -74,7 +74,7 @@ async function connectGemini(
   const { GoogleGenAI, Modality } = await import("@google/genai");
   const ai = new GoogleGenAI({
     apiKey: session.token,
-    httpOptions: { apiVersion: "v1alpha" },
+    httpOptions: { apiVersion: "v1beta" },
   });
   const live = await ai.live.connect({
     model: session.model,

@@ -172,7 +172,7 @@ describe("voice session", () => {
       };
     }[];
     expect(options.apiKey).toBe(KEY);
-    expect(options.httpOptions.apiVersion).toBe("v1alpha");
+    expect(options.httpOptions.apiVersion).toBe("v1beta");
     const { config } = params;
     expect(config.uses).toBe(1);
     expect(config.lockAdditionalFields).toEqual([]);

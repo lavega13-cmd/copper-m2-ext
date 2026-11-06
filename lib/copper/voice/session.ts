@@ -69,10 +69,10 @@ async function geminiSession(model: string): Promise<VoiceSession | null> {
     outputAudioTranscription: {},
   };
 
-  // Ephemeral tokens are a v1alpha feature of the Gemini Developer API.
+  // Ephemeral tokens work only on the v1beta Gemini Developer API (Google docs, 2026-11).
   const ai = new GoogleGenAI({
     apiKey,
-    httpOptions: { apiVersion: "v1alpha" },
+    httpOptions: { apiVersion: "v1beta" },
   });
   const now = Date.now();
   const token = await ai.authTokens.create({
