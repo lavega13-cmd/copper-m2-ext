@@ -81,7 +81,6 @@ async function geminiSession(model: string): Promise<VoiceSession | null> {
       expireTime: new Date(now + SESSION_MS).toISOString(),
       newSessionExpireTime: new Date(now + START_WITHIN_MS).toISOString(),
       liveConnectConstraints: { model, config },
-      lockAdditionalFields: [],
     },
   });
   if (!token.name) throw new Error("Gemini returned no voice token");
