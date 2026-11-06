@@ -136,11 +136,13 @@ export function VoiceChat({
       playContext.current = new AudioContext();
       micContext.current = new AudioContext();
 
-      const session = await startVoice();
-      if (!session) {
+      const started = await startVoice();
+      if ("reason" in started) {
+        console.warn("[voice] unavailable:", started.reason);
         stop("Voice isn't available right now. Type your question instead.");
         return;
       }
+      const session = started.session;
 
       const conversation = createConversation({
         runTool: runVoiceTool,

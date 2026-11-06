@@ -8,16 +8,20 @@ import {
 } from "@/lib/copper/voice/session";
 import { runCopperTool, type VoiceToolResult } from "@/lib/copper/voice/tools";
 
-/** A one-use Gemini Live token, or null when no AI key is set or Gemini says no. */
-export async function startVoice(): Promise<VoiceSession | null> {
+/**
+ * A one-use voice token, or a short reason when voice can't start (no key, or
+ * the provider said no). The reason never contains the key.
+ */
+export async function startVoice(): Promise<
+  { session: VoiceSession } | { reason: string }
+> {
   try {
-    return await createVoiceSession();
+    const session = await createVoiceSession();
+    return session ? { session } : { reason: "no voice key is set" };
   } catch (error) {
-    console.error(
-      "[voice] token",
-      error instanceof Error ? error.message : error,
-    );
-    return null;
+    const reason = error instanceof Error ? error.message : String(error);
+    console.error("[voice] token", reason);
+    return { reason: reason.slice(0, 300) };
   }
 }
 

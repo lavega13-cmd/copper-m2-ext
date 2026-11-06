@@ -158,7 +158,7 @@ describe("voice session", () => {
       params: {
         config: {
           uses: number;
-          lockAdditionalFields: string[];
+          lockAdditionalFields?: string[];
           newSessionExpireTime: string;
           liveConnectConstraints: {
             model: string;
@@ -172,10 +172,11 @@ describe("voice session", () => {
       };
     }[];
     expect(options.apiKey).toBe(KEY);
-    expect(options.httpOptions.apiVersion).toBe("v1alpha");
+    expect(options.httpOptions.apiVersion).toBe("v1beta");
     const { config } = params;
     expect(config.uses).toBe(1);
-    expect(config.lockAdditionalFields).toEqual([]);
+    // Google rejects an empty lock list ("field_mask is invalid"); constraints alone lock the session.
+    expect(config.lockAdditionalFields).toBeUndefined();
     expect(
       Date.parse(config.newSessionExpireTime) - Date.now(),
     ).toBeLessThanOrEqual(60_000);
